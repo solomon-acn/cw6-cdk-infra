@@ -40,7 +40,7 @@ Install the package defined in `pyproject.toml`
 $ poetry install
 ```
 
->[!NOTE]\ Before runnning thw cdk command, you need to make sure your AWS user profile has enought permissions to run s AWS SSM and CloudFormation services. 
+>:warning: Before runnning thw cdk command, you need to make sure your AWS user profile has enought permissions to run s AWS SSM and CloudFormation services. 
 
 Below is the recommended list of policys to attach to user / user group
 - AmazonSSMFullAccess
@@ -52,7 +52,7 @@ At this point you can now synthesize the CloudFormation template for this code.
 $ cdk synth
 ```
 
->[!NOTE]\ Bootstrapping is the process of provisioning resources for the AWS CDK before you can deploy AWS CDK apps into an AWS environment. This is prerequisite for running `cdk deploy`
+>:warning: Bootstrapping is the process of provisioning resources for the AWS CDK before you can deploy AWS CDK apps into an AWS environment. This is prerequisite for running `cdk deploy`
 
 Reference of CDK Bootstrapping \
 https://docs.aws.amazon.com/cdk/v2/guide/bootstrapping.html \
@@ -62,7 +62,7 @@ The minimal policy JSON is inside the folder manual_aws_setup for reference: cdk
 $ cdk bootstrapping
 ``` 
 
->[!NOTE]\ After bootstrapping and set-up the IAM role, S3 bucket and CDKToolkit in CloudFormation, you need to add the assume role policy to the IAM user / user group, so that your AWS user profile can use the IAM role created by cdk bootstrappiing to deploy CloudFormation stack
+>:warning: After bootstrapping and set-up the IAM role, S3 bucket and CDKToolkit in CloudFormation, you need to add the assume role policy to the IAM user / user group, so that your AWS user profile can use the IAM role created by cdk bootstrappiing to deploy CloudFormation stack
 
 Reference:\
 https://stackoverflow.com/questions/34922920/how-can-i-allow-a-group-to-assume-a-role\
