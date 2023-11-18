@@ -1,0 +1,17 @@
+{
+	"Version": "2012-10-17",
+	"Statement": [
+		{
+			"Sid": "AssumeCDKRolesPolicy",
+			"Effect": "Allow",
+			"Action": [
+				"sts:AssumeRole"
+			],
+			"Resource": [
+				"arn:aws:iam::<yout_aws_account_id>:role/cdk-<aws_cdktoolkit_stack_hash>-deploy-role-<yout_aws_account_id>-<aws_region>",
+				"arn:aws:iam::<yout_aws_account_id>:role/cdk-<aws_cdktoolkit_stack_hash>-file-publishing-role-<yout_aws_account_id>-<aws_region>",
+				"arn:aws:iam::<yout_aws_account_id>:role/cdk-<aws_cdktoolkit_stack_hash>-image-publishing-role-<yout_aws_account_id>-<aws_region>"
+			]
+		}
+	]
+}
