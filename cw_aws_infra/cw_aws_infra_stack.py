@@ -1,14 +1,12 @@
-from aws_cdk import Stack, Tags, Fn, Aws
+from aws_cdk import Stack, Fn, CfnOutput
 from constructs import Construct
 from aws_cdk import aws_sagemaker as sagemaker
 from aws_cdk import aws_neptune as neptune
-from aws_cdk import aws_ecs as ecs
-from aws_cdk import aws_ecs_patterns as ecs_patterns
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_ec2 as ec2
-from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_dynamodb as dynamodb
+from aws_cdk import aws_rekognition as rekognition
 
 class CwAwsInfraStack(Stack):
 
@@ -19,7 +17,9 @@ class CwAwsInfraStack(Stack):
         region = self.region
         account_id = self.account
 
-        ### VPC ####################################################
+        #################################################################################################################################
+        ### VPC #########################################################################################################################
+        #################################################################################################################################
 
         # Create a VPC with public
         # https://docs.aws.amazon.com/cdk/api/v2/docs/aws-cdk-lib.aws_ec2.SubnetType.html
@@ -101,7 +101,9 @@ class CwAwsInfraStack(Stack):
             connection=ec2.Port.all_traffic()
         )
 
-        ### Neptune instance ######################################################
+        #################################################################################################################################
+        ### Neptune instance ############################################################################################################
+        #################################################################################################################################
 
         ## Neptune parameters
 
@@ -133,7 +135,7 @@ class CwAwsInfraStack(Stack):
 
         # Create an IAM policy simular to IAM policy created by Netptune Workbench
         neptune_sagemaker_setup_policy = iam.Policy(
-            self, "NeptuneAccessPolicy",
+            self, "CwAwsNeptuneAccessPolicy",
             statements=[
                 # to connect to Neptune DB
                 iam.PolicyStatement(
@@ -153,11 +155,79 @@ class CwAwsInfraStack(Stack):
             ],
         )
 
+        #################################################################################################################################
+        ### DynamoDB, S3 & Rekogniton ###################################################################################################
+        #################################################################################################################################
 
-        # ### SageMakers ######################################################
+        # Create a DynamoDB table
+        cw_dynamodb_table = dynamodb.Table(
+            self, "CwAwsDynamodbTable",
+            table_name="cw_dynamodb_table",
+            partition_key=dynamodb.Attribute(
+                name="id",
+                type=dynamodb.AttributeType.STRING
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+        )
+
+        # Output the table name for reference
+        CfnOutput(self, "DynamoDBTableName", value=cw_dynamodb_table.table_name, description="DynamoDB Table Name",)
+
+        # Create an S3 bucket
+        cw_s3_bucket = s3.Bucket(
+            self, "CwAwsS3Bucket",
+            bucket_name=f"cw-infra-s3-{account_id}",
+            versioned=True,
+        )
+
+        # Output the table name for reference
+        CfnOutput(self, "S3BucketName", value=cw_s3_bucket.table_name, description="S3 Bucket Name",)
+
+        # Create a Rekognition collection
+        cw_rekognition_collection = rekognition.CfnCollection(
+            self, "CwAwsRekognitionCollection",
+            collection_id="cw_rekognition_collection",
+        )
+
+        # Output the table name for reference
+        CfnOutput(self, "RekognitionollectionName", value=cw_rekognition_collection.table_name, description="Rekognition Collection Name",)
+
+        # IAM policy for Rekognition
+        cw_rekognition_policy = iam.Policy(
+            self, "CwAwsRekognitionPolicy",
+            statements=[
+                iam.PolicyStatement(
+                    actions=["rekognition:*"],
+                    resources=["*"],
+                )
+            ],)
+        
+        # IAM policy for access DynamoDB cw_dynamodb_table
+        cw_dynamodb_policy = iam.Policy(
+            self, "CwAwsDynamodbPolicy",
+            statements=[
+                iam.PolicyStatement(
+                    actions=["dynamodb:*"],
+                    resources=[cw_dynamodb_table.table_arn],
+                )
+            ],)
+        
+        # IAM policy for access S3 cw_s3_bucket
+        cw_s3_policy = iam.Policy(
+            self, "CwAwsS3Policy",
+            statements=[
+                iam.PolicyStatement(
+                    actions=["s3:*"],
+                    resources=[cw_s3_bucket.bucket_arn, f"{cw_s3_bucket.bucket_arn}/*"],
+                )
+            ],)
+
+        #################################################################################################################################
+        ### SageMakers ##################################################################################################################
+        #################################################################################################################################
 
         proprietary_repo_arn = "arn:aws:codecommit:eu-west-2:026391457579:cw_sagemaker_notebooks"
-        proprietary_repo = "https://git-codecommit.eu-west-2.amazonaws.com/v1/repos/cw_sagemaker_notebooks"
+        # proprietary_repo = "https://git-codecommit.eu-west-2.amazonaws.com/v1/repos/cw_sagemaker_notebooks"
 
 
         # Create an IAM policy for getting proprietary repository
@@ -181,6 +251,9 @@ class CwAwsInfraStack(Stack):
         # Attach policies to the SageMaker IAM role (customize as needed)
         sagemaker_iam_role.attach_inline_policy(neptune_sagemaker_setup_policy)
         sagemaker_iam_role.attach_inline_policy(notebooks_codecommit_policy)
+        sagemaker_iam_role.attach_inline_policy(cw_rekognition_policy)
+        sagemaker_iam_role.attach_inline_policy(cw_dynamodb_policy)
+        sagemaker_iam_role.attach_inline_policy(cw_s3_policy)
 
         # Neptune on-start stript
         # Do not change indentation, you will regret
@@ -218,5 +291,5 @@ EOF
             security_group_ids=[sagemaker_security_group.security_group_id],
             role_arn=sagemaker_iam_role.role_arn,
             lifecycle_config_name=neptune_notebook_instance_lifecycle_config.notebook_instance_lifecycle_config_name,
-            default_code_repository=f"{proprietary_repo}"
+            # default_code_repository=f"{proprietary_repo}"
         )
