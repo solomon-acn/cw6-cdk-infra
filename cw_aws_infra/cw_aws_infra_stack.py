@@ -1,12 +1,16 @@
-from aws_cdk import Stack, Fn, CfnOutput
+from aws_cdk import (
+    Stack,
+    Fn,
+    CfnOutput,
+    aws_sagemaker as sagemaker,
+    aws_neptune as neptune,
+    aws_iam as iam,
+    aws_ec2 as ec2,
+    aws_s3 as s3,
+    aws_dynamodb as dynamodb,
+    aws_rekognition as rekognition,
+)
 from constructs import Construct
-from aws_cdk import aws_sagemaker as sagemaker
-from aws_cdk import aws_neptune as neptune
-from aws_cdk import aws_iam as iam
-from aws_cdk import aws_ec2 as ec2
-from aws_cdk import aws_s3 as s3
-from aws_cdk import aws_dynamodb as dynamodb
-from aws_cdk import aws_rekognition as rekognition
 
 class CwAwsInfraStack(Stack):
 
@@ -181,7 +185,7 @@ class CwAwsInfraStack(Stack):
         )
 
         # Output the table name for reference
-        CfnOutput(self, "S3BucketName", value=cw_s3_bucket.table_name, description="S3 Bucket Name",)
+        CfnOutput(self, "S3BucketName", value=cw_s3_bucket.bucket_name, description="S3 Bucket Name",)
 
         # Create a Rekognition collection
         cw_rekognition_collection = rekognition.CfnCollection(
@@ -190,7 +194,7 @@ class CwAwsInfraStack(Stack):
         )
 
         # Output the table name for reference
-        CfnOutput(self, "RekognitionollectionName", value=cw_rekognition_collection.table_name, description="Rekognition Collection Name",)
+        CfnOutput(self, "RekognitionollectionId", value=cw_rekognition_collection.collection_id, description="Rekognition Collection Id",)
 
         # IAM policy for Rekognition
         cw_rekognition_policy = iam.Policy(
@@ -232,7 +236,7 @@ class CwAwsInfraStack(Stack):
 
         # Create an IAM policy for getting proprietary repository
         notebooks_codecommit_policy = iam.Policy(
-            self, "cw_notebook_codecommit_access_policy",
+            self, "CwAwsNotebooksCodecommitAccessPolicy",
             statements=[
                 iam.PolicyStatement(
                     actions=["codecommit:GetRepository", "codecommit:GitPull"],
