@@ -11,6 +11,12 @@ from aws_cdk import (
     aws_rekognition as rekognition,
 )
 from constructs import Construct
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 
 class CwAwsInfraStack(Stack):
 
@@ -164,11 +170,12 @@ class CwAwsInfraStack(Stack):
         #################################################################################################################################
 
         # Create a DynamoDB table
+        cw_dynamodb_table_partition_key_name = "id"
         cw_dynamodb_table = dynamodb.Table(
             self, "CwAwsDynamodbTable",
             table_name="cw_dynamodb_table",
             partition_key=dynamodb.Attribute(
-                name="id",
+                name=cw_dynamodb_table_partition_key_name,
                 type=dynamodb.AttributeType.STRING
             ),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -176,6 +183,7 @@ class CwAwsInfraStack(Stack):
 
         # Output the table name for reference
         CfnOutput(self, "DynamoDBTableName", value=cw_dynamodb_table.table_name, description="DynamoDB Table Name",)
+        CfnOutput(self, "DynamoDBTablePartitionKey", value=cw_dynamodb_table_partition_key_name, description="DynamoDB Table partition Key",)
 
         # Create an S3 bucket
         cw_s3_bucket = s3.Bucket(
@@ -230,17 +238,13 @@ class CwAwsInfraStack(Stack):
         ### SageMakers ##################################################################################################################
         #################################################################################################################################
 
-        proprietary_repo_arn = "arn:aws:codecommit:eu-west-2:026391457579:cw_sagemaker_notebooks"
-        # proprietary_repo = "https://git-codecommit.eu-west-2.amazonaws.com/v1/repos/cw_sagemaker_notebooks"
-
-
-        # Create an IAM policy for getting proprietary repository
+        # Create an IAM policy for codecommit access for proprietary repository in AWS codecommit
         notebooks_codecommit_policy = iam.Policy(
             self, "CwAwsNotebooksCodecommitAccessPolicy",
             statements=[
                 iam.PolicyStatement(
                     actions=["codecommit:GetRepository", "codecommit:GitPull"],
-                    resources=[f"{proprietary_repo_arn}"],
+                    resources=[f"{os.environ['PROPRIETARY_REPO_ARN']}"],
                 )
             ],
         )
@@ -295,5 +299,5 @@ EOF
             security_group_ids=[sagemaker_security_group.security_group_id],
             role_arn=sagemaker_iam_role.role_arn,
             lifecycle_config_name=neptune_notebook_instance_lifecycle_config.notebook_instance_lifecycle_config_name,
-            # default_code_repository=f"{proprietary_repo}"
+            default_code_repository=f"{os.environ['PROPRIETARY_REPO']}"
         )

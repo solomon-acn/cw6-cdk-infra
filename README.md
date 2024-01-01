@@ -3,7 +3,7 @@
 
 >:warning: All command in this README file, should run on the root directory of this repository. 
 
-This is a blank project for CDK development with Python.
+This is a project for CDK development with Python.
 
 The `cdk.json` file tells the CDK Toolkit how to execute your app.
 
@@ -28,7 +28,6 @@ https://aws.amazon.com/getting-started/guides/setup-cdk/module-two/
 $ npm install -g aws-cdk
 ```
 
-# CDK Deployment (assume PyEnv and Poetry have installed)
 
 ## initialize the viritual environment with poetry
 
@@ -41,6 +40,12 @@ Install the package defined in `pyproject.toml`
 ```
 $ poetry install
 ```
+
+## Set-up .env file, add the notebook repository information (assume pulling notebook from AWS codecommit)
+
+![create .env file with necessary info](./images/dotenvfile.png)
+
+# CDK Deployment (assume PyEnv and Poetry have installed)
 
 >:warning: Before runnning thw cdk command, you need to make sure your AWS user profile has enought permissions to run s AWS SSM and CloudFormation services. 
 
