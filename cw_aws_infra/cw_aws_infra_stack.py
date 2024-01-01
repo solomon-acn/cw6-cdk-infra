@@ -1,14 +1,22 @@
-from aws_cdk import App, Stack, Tags
+from aws_cdk import (
+    Stack,
+    Fn,
+    CfnOutput,
+    aws_sagemaker as sagemaker,
+    aws_neptune as neptune,
+    aws_iam as iam,
+    aws_ec2 as ec2,
+    aws_s3 as s3,
+    aws_dynamodb as dynamodb,
+    aws_rekognition as rekognition,
+)
 from constructs import Construct
-from aws_cdk import aws_sagemaker as sagemaker
-from aws_cdk import aws_neptune as neptune
-from aws_cdk import aws_ecs as ecs
-from aws_cdk import aws_ecs_patterns as ecs_patterns
-from aws_cdk import aws_iam as iam
-from aws_cdk import aws_ec2 as ec2
-from aws_cdk import aws_secretsmanager as secretsmanager
-from aws_cdk import aws_s3 as s3
-from aws_cdk import aws_dynamodb as dynamodb
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 
 class CwAwsInfraStack(Stack):
 
@@ -19,11 +27,13 @@ class CwAwsInfraStack(Stack):
         region = self.region
         account_id = self.account
 
-        ### VPC ####################################################
+        #################################################################################################################################
+        ### VPC #########################################################################################################################
+        #################################################################################################################################
 
-        # Create a VPC with public and private subnets
+        # Create a VPC with public
         # https://docs.aws.amazon.com/cdk/api/v2/docs/aws-cdk-lib.aws_ec2.SubnetType.html
-        vpc = ec2.Vpc(
+        neptune_vpc = ec2.Vpc(
             self, "CwAwsNeptuneSagemakerEcsVpc",
             max_azs=2,
             subnet_configuration=[
@@ -33,136 +43,213 @@ class CwAwsInfraStack(Stack):
                     cidr_mask=24,
                 ),
                 ec2.SubnetConfiguration(
-                    name="PrivateSubnet",
-                    subnet_type=ec2.SubnetType.PRIVATE_ISOLATED,
+                    name="PrivateWithEGRESSSubnet",
+                    subnet_type=ec2.SubnetType.PRIVATE_WITH_EGRESS,
                     cidr_mask=24,
                 ),
             ],
         )
 
         # Get the public subnet IDs from the VPC
-        public_subnets_ids = vpc.select_subnets(subnet_group_name="PublicSubnet").subnet_ids
+        public_subnets_ids = neptune_vpc.select_subnets(subnet_group_name="PublicSubnet").subnet_ids
 
-        # Get the private subnet IDs from the VPC
-        private_subnets_ids = vpc.select_subnets(subnet_group_name="PrivateSubnet").subnet_ids
-        
-        # Add tags to the stack
-        Tags.of(self).add("StackType", "CwAwsInfraStack")
+        private_with_egress_subnets_ids = neptune_vpc.select_subnets(subnet_group_name="PrivateWithEGRESSSubnet").subnet_ids
 
         ### Security Group ################################################
 
         # Create a Neptune security group
         neptune_security_group = ec2.SecurityGroup(
             self, "NeptuneSecurityGroup",
-            vpc=vpc,
+            vpc=neptune_vpc,
             allow_all_outbound=True,  # Allow outbound traffic
         )
 
         # Create SageMaker security group
         sagemaker_security_group = ec2.SecurityGroup(
             self, "SagemakerSecurityGroup",
-            vpc=vpc,
+            vpc=neptune_vpc,
             allow_all_outbound=True,  # Allow outbound traffic
         )
 
-        # Allow inbound traffic from SageMaker security group to Neptune
+        # Allow inbound and outbound traffic from the same security group
+        
         neptune_security_group.add_ingress_rule(
-            sagemaker_security_group,
-            ec2.Port.tcp(8182),  # Adjust the port as needed
+            peer=neptune_security_group,
+            connection=ec2.Port.all_traffic()
+        )
+        neptune_security_group.add_egress_rule(
+            peer=neptune_security_group,
+            connection=ec2.Port.all_traffic()
         )
 
-        ### Neptune instance ######################################################
+        neptune_security_group.add_ingress_rule(
+            peer=sagemaker_security_group,
+            connection=ec2.Port.all_traffic()
+        )
+        neptune_security_group.add_egress_rule(
+            peer=sagemaker_security_group,
+            connection=ec2.Port.all_traffic()
+        )
+
+        # Allow inbound traffic from SageMaker security group to Neptune
+
+        sagemaker_security_group.add_ingress_rule(
+            peer=neptune_security_group,
+            connection=ec2.Port.all_traffic()
+        )
+        sagemaker_security_group.add_egress_rule(
+            peer=neptune_security_group,
+            connection=ec2.Port.all_traffic()
+        )
+
+        sagemaker_security_group.add_ingress_rule(
+            peer=sagemaker_security_group,
+            connection=ec2.Port.all_traffic()
+        )
+        sagemaker_security_group.add_egress_rule(
+            peer=sagemaker_security_group,
+            connection=ec2.Port.all_traffic()
+        )
+
+        #################################################################################################################################
+        ### Neptune instance ############################################################################################################
+        #################################################################################################################################
+
+        ## Neptune parameters
 
         neptune_cfn_dBSubnet_group = neptune.CfnDBSubnetGroup(
             self, "Neptune_CfnDBSubnetGroup",
             db_subnet_group_description="dbSubnetGroupDescription",
-            subnet_ids=private_subnets_ids,
-
-            # the properties below are optional
+            subnet_ids=public_subnets_ids,
             db_subnet_group_name="neptune_dbSubnetGroupName",
         )
 
-        # Create a Neptune instance within the VPC, associating it with the Neptune security group
+        ## Create a Neptune instance within the VPC, associating it with the Neptune security group
+
         neptune_cluster = neptune.CfnDBCluster(
             self, "CwAwsNeptune",
             db_cluster_identifier="CwAwsNeptune",
             engine_version="1.2.1.0",  # Specify the desired Neptune engine version
             vpc_security_group_ids=[neptune_security_group.security_group_id],
-            db_subnet_group_name=neptune_cfn_dBSubnet_group.ref ,      # .ref is suggested by chatGPT, and it say it is a common practice; I cannot find any source supporting it, but it work ....
+            db_subnet_group_name=neptune_cfn_dBSubnet_group.ref,
             db_port=8182,  # Specify the Neptune cluster port
         )
 
-        # Add tags to the Neptune cluster
-        Tags.of(neptune_cluster).add("cloudwar", "true")
+        neptune_instance = neptune.CfnDBInstance(self, "MyCfnDBInstance",
+            db_instance_class="db.t3.medium",
+            db_instance_identifier="CwAwsNeptune-db1",
+            db_cluster_identifier=neptune_cluster.db_cluster_identifier,
+            )
+        
+        neptune_instance.add_dependency(neptune_cluster)
 
-        # Create an IAM policy for Neptune access
-        neptune_access_policy = iam.Policy(
-            self, "NeptuneAccessPolicy",
+        # Create an IAM policy simular to IAM policy created by Netptune Workbench
+        neptune_sagemaker_setup_policy = iam.Policy(
+            self, "CwAwsNeptuneAccessPolicy",
+            statements=[
+                # to connect to Neptune DB
+                iam.PolicyStatement(
+                    actions=["neptune-db:*"],
+                    resources=[f"arn:aws:rds:{region}:{account_id}:cluster:{neptune_cluster.db_cluster_identifier}/*"],
+                ),
+                # to get the public resource to set-up the Sagemaker magics
+                # https://s3.console.aws.amazon.com/s3/buckets/aws-neptune-notebook
+                iam.PolicyStatement(
+                    actions=["s3:GetObject","s3:ListBucket"],
+                    resources= ["arn:aws:s3:::aws-neptune-notebook","arn:aws:s3:::aws-neptune-notebook/*"],
+                ),
+                iam.PolicyStatement(
+                    actions=["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents"],
+                    resources=["arn:aws:logs:*:*:log-group:/aws/sagemaker/*"],
+                ),
+            ],
+        )
+
+        #################################################################################################################################
+        ### DynamoDB, S3 & Rekogniton ###################################################################################################
+        #################################################################################################################################
+
+        # Create a DynamoDB table
+        cw_dynamodb_table_partition_key_name = "id"
+        cw_dynamodb_table = dynamodb.Table(
+            self, "CwAwsDynamodbTable",
+            table_name="cw_dynamodb_table",
+            partition_key=dynamodb.Attribute(
+                name=cw_dynamodb_table_partition_key_name,
+                type=dynamodb.AttributeType.STRING
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+        )
+
+        # Output the table name for reference
+        CfnOutput(self, "DynamoDBTableName", value=cw_dynamodb_table.table_name, description="DynamoDB Table Name",)
+        CfnOutput(self, "DynamoDBTablePartitionKey", value=cw_dynamodb_table_partition_key_name, description="DynamoDB Table partition Key",)
+
+        # Create an S3 bucket
+        cw_s3_bucket = s3.Bucket(
+            self, "CwAwsS3Bucket",
+            bucket_name=f"cw-infra-s3-{account_id}",
+            versioned=True,
+        )
+
+        # Output the table name for reference
+        CfnOutput(self, "S3BucketName", value=cw_s3_bucket.bucket_name, description="S3 Bucket Name",)
+
+        # Create a Rekognition collection
+        cw_rekognition_collection = rekognition.CfnCollection(
+            self, "CwAwsRekognitionCollection",
+            collection_id="cw_rekognition_collection",
+        )
+
+        # Output the table name for reference
+        CfnOutput(self, "RekognitionollectionId", value=cw_rekognition_collection.collection_id, description="Rekognition Collection Id",)
+
+        # IAM policy for Rekognition
+        cw_rekognition_policy = iam.Policy(
+            self, "CwAwsRekognitionPolicy",
             statements=[
                 iam.PolicyStatement(
-                    actions=["neptune-db:Connect"],
-                    resources=[f"arn:aws:rds:{region}:{account_id}:cluster/{neptune_cluster.db_cluster_identifier}"],
+                    actions=["rekognition:*"],
+                    resources=["*"],
+                )
+            ],)
+        
+        # IAM policy for access DynamoDB cw_dynamodb_table
+        cw_dynamodb_policy = iam.Policy(
+            self, "CwAwsDynamodbPolicy",
+            statements=[
+                iam.PolicyStatement(
+                    actions=["dynamodb:*"],
+                    resources=[cw_dynamodb_table.table_arn],
+                )
+            ],)
+        
+        # IAM policy for access S3 cw_s3_bucket
+        cw_s3_policy = iam.Policy(
+            self, "CwAwsS3Policy",
+            statements=[
+                iam.PolicyStatement(
+                    actions=["s3:*"],
+                    resources=[cw_s3_bucket.bucket_arn, f"{cw_s3_bucket.bucket_arn}/*"],
+                )
+            ],)
+
+        #################################################################################################################################
+        ### SageMakers ##################################################################################################################
+        #################################################################################################################################
+
+        # Create an IAM policy for codecommit access for proprietary repository in AWS codecommit
+        notebooks_codecommit_policy = iam.Policy(
+            self, "CwAwsNotebooksCodecommitAccessPolicy",
+            statements=[
+                iam.PolicyStatement(
+                    actions=["codecommit:GetRepository", "codecommit:GitPull"],
+                    resources=[f"{os.environ['PROPRIETARY_REPO_ARN']}"],
                 )
             ],
         )
 
-        ### ECS cluster ######################################################
-
-        # Create an Amazon ECS cluster
-        ecs_cluster = ecs.Cluster(
-            self, "CwAwsEcsCluster",
-            vpc=vpc,
-            container_insights=True,  # Enable CloudWatch Container Insights
-        )
-
-        # Add the default Cloud Map namespace
-        ecs_cluster.add_default_cloud_map_namespace(
-            name="cloudwar.local",
-        )
-
-        # Attach the Neptune access policy to the ECS task role
-        ecs_task_role = iam.Role(
-            self, "ECSTaskRole",
-            assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
-        )
-        ecs_task_role.attach_inline_policy(neptune_access_policy)
-
-        # Add tags to the Fargate cluster
-        Tags.of(ecs_cluster).add("cloudwar", "true")
-
-        ### ECS task ######################################################
-
-        # Create a simple "Hello World" Fargate task
-        hello_world_task = ecs.FargateTaskDefinition(
-            self, "HelloWorldTask",
-        )
-
-        hello_world_container = hello_world_task.add_container(
-            "HelloWorldContainer",
-            image=ecs.ContainerImage.from_registry("amazon/amazon-ecs-sample"),
-            # Replace with the actual image of your "Hello World" application
-        )
-
-        # Define the port mapping for the container
-        hello_world_container.add_port_mappings(ecs.PortMapping(
-            container_port=80,  # The port your application listens on
-            host_port=80,       # The port on the host (usually the same as container port for HTTP)
-        ))
-
-        # # Commented out because when update stack, the update runs forever
-        # # Create an ECS Fargate service with an Application Load Balancer
-        # ecs_patterns.ApplicationLoadBalancedFargateService(
-        #     self, "HelloWorldService",
-        #     cluster=ecs_cluster,        # Required
-        #     cpu=256,                    # Default is 256
-        #     desired_count=1,            # Default is 1
-        #     task_definition=hello_world_task,
-        #     memory_limit_mib=512,      # Default is 512
-        #     public_load_balancer=True)  # Set this to false if you want a private load balancer
-
-        ### SageMakers ######################################################
-
-        # Create a SageMaker IAM role with permissions to use Neptune
+        # Create a SageMaker IAM role 
         sagemaker_iam_role = iam.Role(
             self, "CwAwsSagemakerIAMRole",
             assumed_by=iam.ServicePrincipal("sagemaker.amazonaws.com"),
@@ -170,53 +257,47 @@ class CwAwsInfraStack(Stack):
         )
 
         # Attach policies to the SageMaker IAM role (customize as needed)
-        sagemaker_iam_role.attach_inline_policy(neptune_access_policy)
-
-        # Create an IAM policy for Neptune access
-        notebooks_codecommit_policy = iam.Policy(
-            self, "cw_notebook_codecommit_access_policy",
-            statements=[
-                iam.PolicyStatement(
-                    actions=["codecommit:GetRepository", "codecommit:GitPull"],
-                    resources=["arn:aws:codecommit:eu-west-2:026391457579:cw_sagemaker_notebooks"],
-                )
-            ],
-        )
-
-        # Attach policies to the SageMaker IAM role (customize as needed)
+        sagemaker_iam_role.attach_inline_policy(neptune_sagemaker_setup_policy)
         sagemaker_iam_role.attach_inline_policy(notebooks_codecommit_policy)
+        sagemaker_iam_role.attach_inline_policy(cw_rekognition_policy)
+        sagemaker_iam_role.attach_inline_policy(cw_dynamodb_policy)
+        sagemaker_iam_role.attach_inline_policy(cw_s3_policy)
 
-        # Create a SageMaker notebook instance
-        sagemaker_notebook = sagemaker.CfnNotebookInstance(
-            self, "CwAwsSagemaker",
-            instance_type="ml.t2.medium",
-            role_arn=sagemaker_iam_role.role_arn,
+        # Neptune on-start stript
+        # Do not change indentation, you will regret
+        notebook_lifecycle_script = f'''#!/bin/bash
+sudo -u ec2-user -i <<'EOF'
+
+echo "export GRAPH_NOTEBOOK_AUTH_MODE=DEFAULT" >> ~/.bashrc
+echo "export GRAPH_NOTEBOOK_HOST={neptune_cluster.attr_endpoint}" >> ~/.bashrc
+echo "export GRAPH_NOTEBOOK_PORT={neptune_cluster.attr_port}" >> ~/.bashrc
+echo "export NEPTUNE_LOAD_FROM_S3_ROLE_ARN=" >> ~/.bashrc
+echo "export AWS_REGION={region}" >> ~/.bashrc
+aws s3 cp s3://aws-neptune-notebook/graph_notebook.tar.gz /tmp/graph_notebook.tar.gz
+rm -rf /tmp/graph_notebook
+tar -zxvf /tmp/graph_notebook.tar.gz -C /tmp
+/tmp/graph_notebook/install.sh
+
+EOF
+'''
+
+        # Neptune Notebook Instance Lifecycle Config
+        neptune_notebook_instance_lifecycle_config = sagemaker.CfnNotebookInstanceLifecycleConfig(
+            self, "NeptuneNotebookInstanceLifecycleConfig",
+            notebook_instance_lifecycle_config_name='aws-neptune-cdk-LC',
+            on_start=[sagemaker.CfnNotebookInstanceLifecycleConfig.NotebookInstanceLifecycleHookProperty(
+                content=Fn.base64(notebook_lifecycle_script))
+                ]
+        )
+
+        # Neptune Notebook Instance
+        neptune_notebook_instance = sagemaker.CfnNotebookInstance(
+            self,"CwAwsSagemaker",
             notebook_instance_name="cw-aws-sagemaker",
-            default_code_repository="https://git-codecommit.eu-west-2.amazonaws.com/v1/repos/cw_sagemaker_notebooks", # Manually created in the same region - London
-            security_group_ids=[sagemaker_security_group.security_group_id],
+            instance_type="ml.t3.medium",
             subnet_id=public_subnets_ids[0],
+            security_group_ids=[sagemaker_security_group.security_group_id],
+            role_arn=sagemaker_iam_role.role_arn,
+            lifecycle_config_name=neptune_notebook_instance_lifecycle_config.notebook_instance_lifecycle_config_name,
+            default_code_repository=f"{os.environ['PROPRIETARY_REPO']}"
         )
-
-        ## S3 Bucket and DynamoDB #######################################
-
-        # Create a S3 bucket
-        bucket = s3.Bucket(self, "cw_cdk_testbucket", versioned=True)
-
-        # Create a DynamoDB table
-        cw_face_index_table = dynamodb.Table(
-            self, "CwFaceIndexTable",
-            table_name="CwFaceIndexTable",
-            partition_key=dynamodb.Attribute(
-                name="FaceId",
-                type=dynamodb.AttributeType.STRING
-            ),
-            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,  # You can adjust this as needed
-        )
-
-        
-
-
-# Create the CDK app and stack
-app = App()
-CwAwsInfraStack(app, "CwAwsInfraStack")
-app.synth()
