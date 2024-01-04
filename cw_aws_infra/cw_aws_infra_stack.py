@@ -55,6 +55,12 @@ class CwAwsInfraStack(Stack):
 
         private_with_egress_subnets_ids = neptune_vpc.select_subnets(subnet_group_name="PrivateWithEGRESSSubnet").subnet_ids
 
+        # Add an S3 VPC endpoint
+        neptune_vpc.add_gateway_endpoint(
+            "S3Endpoint",
+            service=ec2.GatewayVpcEndpointAwsService.S3
+        )
+
         ### Security Group ################################################
 
         # Create a Neptune security group
@@ -109,60 +115,6 @@ class CwAwsInfraStack(Stack):
         sagemaker_security_group.add_egress_rule(
             peer=sagemaker_security_group,
             connection=ec2.Port.all_traffic()
-        )
-
-        #################################################################################################################################
-        ### Neptune instance ############################################################################################################
-        #################################################################################################################################
-
-        ## Neptune parameters
-
-        neptune_cfn_dBSubnet_group = neptune.CfnDBSubnetGroup(
-            self, "Neptune_CfnDBSubnetGroup",
-            db_subnet_group_description="dbSubnetGroupDescription",
-            subnet_ids=public_subnets_ids,
-            db_subnet_group_name="neptune_dbSubnetGroupName",
-        )
-
-        ## Create a Neptune instance within the VPC, associating it with the Neptune security group
-
-        neptune_cluster = neptune.CfnDBCluster(
-            self, "CwAwsNeptune",
-            db_cluster_identifier="CwAwsNeptune",
-            engine_version="1.2.1.0",  # Specify the desired Neptune engine version
-            vpc_security_group_ids=[neptune_security_group.security_group_id],
-            db_subnet_group_name=neptune_cfn_dBSubnet_group.ref,
-            db_port=8182,  # Specify the Neptune cluster port
-        )
-
-        neptune_instance = neptune.CfnDBInstance(self, "MyCfnDBInstance",
-            db_instance_class="db.t3.medium",
-            db_instance_identifier="CwAwsNeptune-db1",
-            db_cluster_identifier=neptune_cluster.db_cluster_identifier,
-            )
-        
-        neptune_instance.add_dependency(neptune_cluster)
-
-        # Create an IAM policy simular to IAM policy created by Netptune Workbench
-        neptune_sagemaker_setup_policy = iam.Policy(
-            self, "CwAwsNeptuneAccessPolicy",
-            statements=[
-                # to connect to Neptune DB
-                iam.PolicyStatement(
-                    actions=["neptune-db:*"],
-                    resources=[f"arn:aws:rds:{region}:{account_id}:cluster:{neptune_cluster.db_cluster_identifier}/*"],
-                ),
-                # to get the public resource to set-up the Sagemaker magics
-                # https://s3.console.aws.amazon.com/s3/buckets/aws-neptune-notebook
-                iam.PolicyStatement(
-                    actions=["s3:GetObject","s3:ListBucket"],
-                    resources= ["arn:aws:s3:::aws-neptune-notebook","arn:aws:s3:::aws-neptune-notebook/*"],
-                ),
-                iam.PolicyStatement(
-                    actions=["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents"],
-                    resources=["arn:aws:logs:*:*:log-group:/aws/sagemaker/*"],
-                ),
-            ],
         )
 
         #################################################################################################################################
@@ -233,6 +185,84 @@ class CwAwsInfraStack(Stack):
                     resources=[cw_s3_bucket.bucket_arn, f"{cw_s3_bucket.bucket_arn}/*"],
                 )
             ],)
+        
+        # Define a Neptune upload to S3 IAM role
+        cw_neptune_load_from_s3_role = iam.Role(
+            self, 'CwS3ReadOnlyRole',
+            assumed_by=iam.ServicePrincipal('rds.amazonaws.com'),
+            description='IAM role with S3 read and list access',
+            role_name='CwNeptuneloadFromS3AccessRole'  # Set a unique name for your role
+        )
+
+        # IAM policy for Read-only access to S3 cw_s3_bucket
+        cw_s3_read_only_policy = iam.Policy(
+            self, "CwS3ReadOnlyPolicy",
+            statements=[
+                iam.PolicyStatement(
+                    actions=["s3:Get*","s3:List*"],
+                    resources=[cw_s3_bucket.bucket_arn, f"{cw_s3_bucket.bucket_arn}/*"],
+                )
+            ],)
+
+        cw_neptune_load_from_s3_role.attach_inline_policy(cw_s3_read_only_policy)
+        CfnOutput(self, "Neptune_S3_upload_IAM_ARN", value=cw_neptune_load_from_s3_role.role_arn, description="ARM for the Neptune upload from S3 role",)
+        
+        #################################################################################################################################
+        ### Neptune instance ############################################################################################################
+        #################################################################################################################################
+
+        ## Neptune parameters
+
+        neptune_cfn_dBSubnet_group = neptune.CfnDBSubnetGroup(
+            self, "Neptune_CfnDBSubnetGroup",
+            db_subnet_group_description="dbSubnetGroupDescription",
+            subnet_ids=public_subnets_ids,
+            db_subnet_group_name="neptune_dbSubnetGroupName",
+        )
+
+        ## Create a Neptune instance within the VPC, associating it with the Neptune security group
+
+        neptune_cluster = neptune.CfnDBCluster(
+            self, "CwAwsNeptune",
+            db_cluster_identifier="CwAwsNeptune",
+            engine_version="1.2.1.0",  # Specify the desired Neptune engine version
+            vpc_security_group_ids=[neptune_security_group.security_group_id],
+            db_subnet_group_name=neptune_cfn_dBSubnet_group.ref,
+            db_port=8182,  # Specify the Neptune cluster port
+            associated_roles=[neptune.CfnDBCluster.DBClusterRoleProperty(
+                role_arn=cw_neptune_load_from_s3_role.role_arn,
+                )]
+        )
+
+        neptune_instance = neptune.CfnDBInstance(self, "MyCfnDBInstance",
+            db_instance_class="db.t3.medium",
+            db_instance_identifier="CwAwsNeptune-db1",
+            db_cluster_identifier=neptune_cluster.db_cluster_identifier,
+            )
+        
+        neptune_instance.add_dependency(neptune_cluster)
+
+        # Create an IAM policy simular to IAM policy created by Netptune Workbench
+        neptune_sagemaker_setup_policy = iam.Policy(
+            self, "CwAwsNeptuneAccessPolicy",
+            statements=[
+                # to connect to Neptune DB
+                iam.PolicyStatement(
+                    actions=["neptune-db:*"],
+                    resources=[f"arn:aws:rds:{region}:{account_id}:cluster:{neptune_cluster.db_cluster_identifier}/*"],
+                ),
+                # to get the public resource to set-up the Sagemaker magics
+                # https://s3.console.aws.amazon.com/s3/buckets/aws-neptune-notebook
+                iam.PolicyStatement(
+                    actions=["s3:GetObject","s3:ListBucket"],
+                    resources= ["arn:aws:s3:::aws-neptune-notebook","arn:aws:s3:::aws-neptune-notebook/*"],
+                ),
+                iam.PolicyStatement(
+                    actions=["logs:CreateLogGroup","logs:CreateLogStream","logs:PutLogEvents"],
+                    resources=["arn:aws:logs:*:*:log-group:/aws/sagemaker/*"],
+                ),
+            ],
+        )
 
         #################################################################################################################################
         ### SageMakers ##################################################################################################################
